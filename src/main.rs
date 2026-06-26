@@ -108,17 +108,18 @@ fn run_cycle(cfg: &Config, factory: &WallpaperSetterFactory) -> u64 {
     });
 
     prepare_output_dir(&cfg.output_folder);
-    if let Some(parent) = Path::new(&history_file()).parent() {
+    let hist_file = history_file();
+    if let Some(parent) = Path::new(&hist_file).parent() {
         prepare_output_dir(&parent.to_string_lossy());
     }
 
     let mut record_mgr = DownloadRecordManager::new();
-    record_mgr.load(&history_file());
+    record_mgr.load(&hist_file);
 
     match download_wallpaper(cfg, &client, &record_mgr) {
         Ok(records) => {
             if let Some(records) = records {
-                save_history(&records, cfg, &mut record_mgr);
+                save_history(&records, cfg, &mut record_mgr, &hist_file);
                 if records.is_empty() || cfg.setter == "no" {
                     log::info!("nothing to set");
                 } else if let Some(factory_fn) = factory.get(&cfg.setter) {
@@ -207,7 +208,7 @@ fn download_wallpaper(
             }
 
             log::info!("download photo of \"{}\"", copyright);
-            let raw = match save_a_picture(client, mainlink, copyright, &outfile) {
+            let raw = match save_a_picture(client, mainlink, &outfile) {
                 Some(r) => r,
                 None => continue,
             };
@@ -250,13 +251,12 @@ fn collect_assets(
 ) {
     for link in wplinks {
         let filename = get_output_filename(cfg, link);
-        let raw = match save_a_picture(client, link, &metadata.copyright, &filename) {
+        let raw = match save_a_picture(client, link, &filename) {
             Some(r) => r,
             None => continue,
         };
-        if filename.to_lowercase().ends_with(".jpg")
-            || filename.to_lowercase().ends_with(".jpeg")
-        {
+        let lower = filename.to_lowercase();
+        if lower.ends_with(".jpg") || lower.ends_with(".jpeg") {
             let r = DownloadRecord::new(
                 link.clone(),
                 filename.clone(),
@@ -285,7 +285,6 @@ fn collect_assets(
 fn save_a_picture(
     client: &reqwest::blocking::Client,
     pic_url: &str,
-    _copyright: &str,
     outfile: &str,
 ) -> Option<Vec<u8>> {
     let picture_content = webutil::loadurl(client, pic_url, false);
@@ -342,9 +341,7 @@ fn get_output_filename(cfg: &Config, link: &str) -> String {
 
 fn prepare_output_dir(d: &str) {
     if let Err(e) = std::fs::create_dir_all(d) {
-        if e.kind() != std::io::ErrorKind::AlreadyExists {
-            log::error!("can not create output folder {}: {}", d, e);
-        }
+        log::error!("can not create output folder {}: {}", d, e);
     }
 }
 
@@ -352,6 +349,7 @@ fn save_history(
     records: &[DownloadRecord],
     cfg: &Config,
     record_mgr: &mut DownloadRecordManager,
+    hist_file: &str,
 ) {
     if records.is_empty() {
         return;
@@ -359,7 +357,7 @@ fn save_history(
     let last_record = &records[0];
     record_mgr.clear();
     record_mgr.add(last_record.clone());
-    if let Err(e) = record_mgr.save(&history_file()) {
+    if let Err(e) = record_mgr.save(hist_file) {
         log::warn!("error occurs when store downloading history: {}", e);
     }
 

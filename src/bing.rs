@@ -189,65 +189,45 @@ impl AssetCollector for AccompanyImageCollector {
     }
 }
 
+fn collect_video_urls(curimage: &Value, hd: bool) -> Option<Vec<String>> {
+    let vid = curimage.get("vid")?;
+    let sources = vid["sources"].as_array()?;
+    let mut vlink = Vec::new();
+    for item in sources {
+        let arr = item.as_array()?;
+        if arr.len() < 3 {
+            continue;
+        }
+        let video_format = arr[0].as_str()?;
+        let video_url = arr[2].as_str()?;
+        if video_format.ends_with("hd") != hd {
+            continue;
+        }
+        let url = if video_url.starts_with("//") {
+            format!("http:{}", video_url)
+        } else {
+            video_url.to_string()
+        };
+        vlink.push(url);
+    }
+    if vlink.is_empty() {
+        None
+    } else {
+        Some(vlink)
+    }
+}
+
 pub struct VideoCollector;
 impl AssetCollector for VideoCollector {
     fn collect(&self, _rooturl: &str, curimage: &Value) -> Option<Vec<String>> {
-        let vid = curimage.get("vid")?;
-        let sources = vid["sources"].as_array()?;
-        let mut vlink = Vec::new();
-        for item in sources {
-            let arr = item.as_array()?;
-            if arr.len() < 3 {
-                continue;
-            }
-            let video_format = arr[0].as_str()?;
-            let video_url = arr[2].as_str()?;
-            if video_format.ends_with("hd") {
-                continue;
-            }
-            let url = if video_url.starts_with("//") {
-                format!("http:{}", video_url)
-            } else {
-                video_url.to_string()
-            };
-            vlink.push(url);
-        }
-        if vlink.is_empty() {
-            None
-        } else {
-            Some(vlink)
-        }
+        collect_video_urls(curimage, false)
     }
 }
 
 pub struct HdVideoCollector;
 impl AssetCollector for HdVideoCollector {
     fn collect(&self, _rooturl: &str, curimage: &Value) -> Option<Vec<String>> {
-        let vid = curimage.get("vid")?;
-        let sources = vid["sources"].as_array()?;
-        let mut vlink = Vec::new();
-        for item in sources {
-            let arr = item.as_array()?;
-            if arr.len() < 3 {
-                continue;
-            }
-            let video_format = arr[0].as_str()?;
-            let video_url = arr[2].as_str()?;
-            if !video_format.ends_with("hd") {
-                continue;
-            }
-            let url = if video_url.starts_with("//") {
-                format!("http:{}", video_url)
-            } else {
-                video_url.to_string()
-            };
-            vlink.push(url);
-        }
-        if vlink.is_empty() {
-            None
-        } else {
-            Some(vlink)
-        }
+        collect_video_urls(curimage, true)
     }
 }
 
@@ -383,7 +363,7 @@ impl BingWallpaperPage {
             }
         }
         self.update_img_link(client);
-        log::warn!("links to be downloaded: {:?}", self.wplinks);
+        log::debug!("links to be downloaded: {:?}", self.wplinks);
         true
     }
 
@@ -407,6 +387,13 @@ impl BingWallpaperPage {
 
     fn update_img_link(&mut self, client: &Client) {
         self.wplinks.clear();
+        let hr = match get_high_resolution_setting(&self.high_resolution_name, &self.resolution) {
+            Ok(hr) => hr,
+            Err(e) => {
+                log::error!("{}", e);
+                return;
+            }
+        };
         for i in &self.images {
             let metadata = self.get_metadata(i);
             let has_wp = i.get("wp").and_then(|v| v.as_bool()).unwrap_or(false);
@@ -421,13 +408,6 @@ impl BingWallpaperPage {
                 self.resolution,
                 self.act_market
             );
-            let hr = match get_high_resolution_setting(&self.high_resolution_name, &self.resolution) {
-                Ok(hr) => hr,
-                Err(e) => {
-                    log::error!("{}", e);
-                    continue;
-                }
-            };
             let wplink = hr.get_pic_url(client, &self.base, imgurlbase, fallbackurl, has_wp, &self.resolution);
             let mut collections: Vec<String> = Vec::new();
             for collector_name in &self.collect {
