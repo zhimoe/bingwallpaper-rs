@@ -71,7 +71,14 @@ fn main() {
     factory.register("win", || Box::new(winsetter::Win32WallpaperSetter::new()));
     factory.register("no", || Box::new(NoopSetter));
 
-    if !cfg.foreground && cfg.background {
+    // On Windows, default to background/daemon mode unless --foreground is explicitly set.
+    // On other platforms, background mode requires the -b/--background flag.
+    #[cfg(windows)]
+    let run_as_daemon = !cfg.foreground;
+    #[cfg(not(windows))]
+    let run_as_daemon = !cfg.foreground && cfg.background;
+
+    if run_as_daemon {
         log::info!("daemon is running");
         loop {
             let cfg = Config::from_cli_and_file(&cli);
@@ -133,7 +140,11 @@ fn run_cycle(cfg: &Config, factory: &WallpaperSetterFactory) -> u64 {
             cfg.interval * 3600
         }
         Err(CannotLoadImagePage) => {
-            if !cfg.foreground && cfg.background {
+            #[cfg(windows)]
+            let in_daemon = !cfg.foreground;
+            #[cfg(not(windows))]
+            let in_daemon = !cfg.foreground && cfg.background;
+            if in_daemon {
                 log::info!("network error happened, daemon will retry in 60 seconds");
                 60
             } else {
