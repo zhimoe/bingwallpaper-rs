@@ -6,7 +6,7 @@ use std::path::PathBuf;
 #[command(
     name = "bingwallpaper",
     about = "Download the wallpaper offered by Bing.com and set it current wallpaper background.",
-    version = "1.6.0"
+    version = env!("CARGO_PKG_VERSION")
 )]
 pub struct CliArgs {
     #[arg(short, long, action = clap::ArgAction::Count)]
@@ -184,7 +184,7 @@ impl Config {
         // Load from INI if exists
         if std::path::Path::new(&cfg.config_file).is_file() {
             let mut ini = Ini::new();
-            if let Ok(_) = ini.load(&cfg.config_file) {
+            if ini.load(&cfg.config_file).is_ok() {
                 if let Some(v) = ini.get("Daemon", "background") {
                     cfg.background = parse_bool(&v);
                 }
@@ -268,11 +268,11 @@ impl Config {
         // CLI overrides (apply after INI)
         cfg.generate_config = cli.generate_config;
         cfg.list_markets = cli.list_markets;
-        cfg.background = cli.background;
-        cfg.foreground = cli.foreground;
-        cfg.keep_file_name = cli.keep_file_name;
-        cfg.redownload = cli.redownload;
-        cfg.database_no_image = cli.database_no_image;
+        if cli.background { cfg.background = true; }
+        if cli.foreground { cfg.foreground = true; }
+        if cli.keep_file_name { cfg.keep_file_name = true; }
+        if cli.redownload { cfg.redownload = true; }
+        if cli.database_no_image { cfg.database_no_image = true; }
 
         if cli.debug > 0 {
             cfg.debug = cli.debug;

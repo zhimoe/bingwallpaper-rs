@@ -99,7 +99,7 @@ impl DownloadRecordManager {
             }
         };
         log::debug!("json file loaded: {:?}", content);
-        for (_, r) in content {
+        for r in content.into_values() {
             if Path::new(&r.local_file).is_file() {
                 self.add(r);
             } else {
@@ -258,15 +258,10 @@ UPDATE [BingWallpaperCore]
     }
 
     fn vercmp(&self, ver1: (i32, i32, i32), ver2: (i32, i32, i32)) -> i32 {
-        if ver1 == ver2 {
-            0
-        } else if ver1.0 > ver2.0
-            || (ver1.0 == ver2.0 && ver1.1 > ver2.1)
-            || (ver1.0 == ver2.0 && ver1.1 == ver2.1 && ver1.2 > ver2.2)
-        {
-            1
-        } else {
-            -1
+        match ver1.cmp(&ver2) {
+            std::cmp::Ordering::Equal => 0,
+            std::cmp::Ordering::Greater => 1,
+            std::cmp::Ordering::Less => -1,
         }
     }
 
@@ -300,9 +295,6 @@ UPDATE [BingWallpaperCore]
             .optional()?
             .unwrap_or((0, 0, 0))
         };
-        if ver == (0, 0, 0) {
-            return Ok(ver);
-        }
         Ok(ver)
     }
 }
