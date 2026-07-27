@@ -10,6 +10,8 @@ jobs:
   build-and-test:
     name: Build and test on Windows
     runs-on: windows-latest
+    permissions:
+      contents: read
 
     steps:
       - name: Checkout
