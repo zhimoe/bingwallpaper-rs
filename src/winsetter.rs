@@ -1,4 +1,5 @@
 use crate::setter::WallpaperSetter;
+use std::path::Path;
 
 pub struct Win32WallpaperSetter;
 

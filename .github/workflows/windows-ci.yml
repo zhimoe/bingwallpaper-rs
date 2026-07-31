@@ -1,0 +1,108 @@
+name: Windows CI
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+    branches: ["**"]
+
+jobs:
+  build-and-test:
+    name: Build and test on Windows
+    runs-on: windows-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
+
+      - name: Build (release)
+        run: cargo build --release
+
+      - name: Smoke-test binary (version)
+        run: .\target\release\bingwallpaper.exe --version
+
+      # -----------------------------------------------------------------------
+      # Autostart: install → verify registry key → uninstall → verify removed
+      # -----------------------------------------------------------------------
+      - name: Install autostart
+        run: .\target\release\bingwallpaper.exe --install-autostart
+
+      - name: Verify autostart registry key exists and contains -b flag
+        shell: pwsh
+        run: |
+          $val = (Get-ItemProperty `
+            -Path "HKCU:\Software\Microsoft\Windows\CurrentVersion\Run" `
+            -Name "BingWallpaper" `
+            -ErrorAction SilentlyContinue).BingWallpaper
+          if (-not $val) {
+            Write-Error "Autostart registry key not found"
+            exit 1
+          }
+          Write-Host "Autostart value: $val"
+          if ($val -notmatch '\-b') {
+            Write-Error "Autostart value does not contain the -b background flag"
+            exit 1
+          }
+          Write-Host "Autostart key verified OK"
+
+      - name: Uninstall autostart
+        run: .\target\release\bingwallpaper.exe --uninstall-autostart
+
+      - name: Verify autostart registry key is removed
+        shell: pwsh
+        run: |
+          $val = (Get-ItemProperty `
+            -Path "HKCU:\Software\Microsoft\Windows\CurrentVersion\Run" `
+            -Name "BingWallpaper" `
+            -ErrorAction SilentlyContinue).BingWallpaper
+          if ($val) {
+            Write-Error "Autostart registry key still present after uninstall: $val"
+            exit 1
+          }
+          Write-Host "Autostart key removed OK"
+
+      # -----------------------------------------------------------------------
+      # Single-run (foreground) with --setter no to avoid actual display ops
+      # -----------------------------------------------------------------------
+      - name: Foreground single-run (no wallpaper setter)
+        run: .\target\release\bingwallpaper.exe --foreground --setter no
+        timeout-minutes: 2
+
+      # -----------------------------------------------------------------------
+      # Background/daemon mode: start process, let it complete first cycle, stop
+      # -----------------------------------------------------------------------
+      - name: Background daemon mode (one cycle then kill)
+        shell: pwsh
+        run: |
+          $proc = Start-Process `
+            -FilePath ".\target\release\bingwallpaper.exe" `
+            -ArgumentList "--background", "--setter", "no" `
+            -PassThru `
+            -NoNewWindow
+          Write-Host "Started daemon PID $($proc.Id)"
+          # Give it up to 60 s to complete the first download cycle
+          $deadline = (Get-Date).AddSeconds(60)
+          while (-not $proc.HasExited -and (Get-Date) -lt $deadline) {
+            Start-Sleep -Seconds 5
+          }
+          if (-not $proc.HasExited) {
+            Write-Host "Daemon still running after first cycle window — stopping it"
+            Stop-Process -Id $proc.Id -Force
+          }
+          Write-Host "Background daemon test complete (exit code: $($proc.ExitCode))"
