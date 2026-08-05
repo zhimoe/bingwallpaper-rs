@@ -1,7 +1,7 @@
 [package]
 name = "bingwallpaper"
 version = "1.6.0"
-edition = "2021"
+edition = "2024"
 
 [dependencies]
 reqwest = { version = "0.12", features = ["blocking", "gzip"] }
@@ -17,12 +17,9 @@ image = { version = "0.25", default-features = false, features = ["jpeg", "png",
 
 [target.'cfg(windows)'.dependencies]
 windows = { version = "0.58", features = [
-    "Win32_System_SystemInformation",
     "Win32_UI_WindowsAndMessaging",
     "Win32_System_Registry",
-    "Win32_Foundation",
-    "Win32_Graphics_Gdi",
-    "Win32_UI_Shell",
+    "Win32_UI",
 ] }
 
 [profile.release]
