@@ -1,8 +1,10 @@
 use crate::setter::WallpaperSetter;
+#[cfg(windows)]
 use windows::Win32::UI::WindowsAndMessaging::{
-    SystemParametersInfoW, SPIF_SENDCHANGE, SPIF_UPDATEINIFILE, SPI_SETDESKWALLPAPER,
-    SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS,
+    SPI_SETDESKWALLPAPER, SPIF_SENDCHANGE, SPIF_UPDATEINIFILE, SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS,
+    SystemParametersInfoW,
 };
+#[cfg(windows)]
 use windows_registry::CURRENT_USER;
 
 pub struct Win32WallpaperSetter;
@@ -16,7 +18,13 @@ impl Win32WallpaperSetter {
 #[cfg(windows)]
 impl WallpaperSetter for Win32WallpaperSetter {
     fn set(&self, path: &str, _args: &[String]) -> bool {
-        let image_full_path = path.replace('/', "\\");
+        let image_full_path = match std::fs::canonicalize(path) {
+            Ok(path) => path.to_string_lossy().replace('/', "\\"),
+            Err(e) => {
+                log::error!("failed to resolve wallpaper path {}: {}", path, e);
+                return false;
+            }
+        };
 
         // 设置壁纸样式 (10 = 填充，0 = 居中等)
         if let Ok(key) = CURRENT_USER.open("Control Panel\\Desktop") {

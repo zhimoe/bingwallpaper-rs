@@ -13,14 +13,12 @@ log = "0.4"
 env_logger = "0.11"
 chrono = { version = "0.4", features = ["serde"] }
 rusqlite = { version = "0.32", features = ["bundled"] }
-image = { version = "0.25", default-features = false, features = ["jpeg", "png", "bmp"] }
 
 [target.'cfg(windows)'.dependencies]
 windows = { version = "0.58", features = [
     "Win32_UI_WindowsAndMessaging",
-    "Win32_System_Registry",
-    "Win32_UI",
 ] }
+windows-registry = "0.6"
 
 [profile.release]
 opt-level = 3

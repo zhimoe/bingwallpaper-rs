@@ -1,33 +1,38 @@
 use reqwest::blocking::Client;
 use reqwest::header::{HeaderMap, HeaderValue, USER_AGENT};
+use std::time::Duration;
 
-static USER_AGENT_STR: &str = "Mozilla/5.0 (Windows NT 6.1) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/29.0.1521.3 Safari/537.36";
+static USER_AGENT_STR: &str = concat!("bingwallpaper/", env!("CARGO_PKG_VERSION"));
 
-pub fn build_client(
-    proxy_config: Option<(&str, u16, Option<&str>, Option<&str>)>,
-) -> Client {
+pub fn build_client(proxy_config: Option<(&str, u16, Option<&str>, Option<&str>)>) -> Client {
     let mut headers = HeaderMap::new();
     headers.insert(USER_AGENT, HeaderValue::from_static(USER_AGENT_STR));
-    let mut builder = Client::builder().gzip(true).default_headers(headers);
+    let mut builder = Client::builder()
+        .gzip(true)
+        .connect_timeout(Duration::from_secs(10))
+        .timeout(Duration::from_secs(60))
+        .default_headers(headers);
 
-    if let Some((server, port, username, password)) = proxy_config {
-        if !server.is_empty() {
-            let proxy_url = if let Some(user) = username {
-                if let Some(pass) = password {
-                    format!("http://{}:{}@{}:{}", user, pass, server, port)
-                } else {
-                    format!("http://{}@{}:{}", user, server, port)
-                }
-            } else {
-                format!("http://{}:{}", server, port)
-            };
-            if let Ok(proxy) = reqwest::Proxy::all(&proxy_url) {
+    if let Some((server, port, username, password)) = proxy_config
+        && !server.is_empty()
+    {
+        let proxy_url = format!("http://{}:{}", server, port);
+        match reqwest::Proxy::all(&proxy_url) {
+            Ok(proxy) => {
+                let proxy = match (username, password) {
+                    (Some(user), Some(pass)) => proxy.basic_auth(user, pass),
+                    _ => proxy,
+                };
                 builder = builder.proxy(proxy);
             }
+            Err(e) => log::error!("invalid proxy URL {}: {}", proxy_url, e),
         }
     }
 
-    builder.build().unwrap_or_else(|_| Client::new())
+    builder.build().unwrap_or_else(|e| {
+        log::error!("failed to build HTTP client: {}", e);
+        Client::new()
+    })
 }
 
 pub fn loadurl(client: &Client, url: &str, optional: bool) -> Option<Vec<u8>> {
@@ -35,15 +40,20 @@ pub fn loadurl(client: &Client, url: &str, optional: bool) -> Option<Vec<u8>> {
         return None;
     }
     match client.get(url).send() {
-        Ok(resp) => {
-            if resp.status().is_success() {
-                resp.bytes().ok().map(|b| b.to_vec())
-            } else {
+        Ok(resp) if resp.status().is_success() => match resp.bytes() {
+            Ok(bytes) => Some(bytes.to_vec()),
+            Err(e) => {
                 if !optional {
-                    log::error!("HTTP error {} for {}", resp.status(), url);
+                    log::error!("failed to read response from {}: {}", url, e);
                 }
                 None
             }
+        },
+        Ok(resp) => {
+            if !optional {
+                log::error!("HTTP error {} for {}", resp.status(), url);
+            }
+            None
         }
         Err(e) => {
             if !optional {

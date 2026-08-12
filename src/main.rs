@@ -20,8 +20,8 @@ fn history_file() -> String {
         .or_else(|_| std::env::var("HOME"))
         .unwrap_or_else(|_| ".".to_string());
     Path::new(&app_data)
-        .join("Genzj")
-        .join("PyBingWallpaper")
+        .join("zhimoe")
+        .join("BingWallpaper")
         .join("bing-wallpaper-history.json")
         .to_string_lossy()
         .to_string()
@@ -99,6 +99,16 @@ impl setter::WallpaperSetter for NoopSetter {
 }
 
 fn run_cycle(cfg: &Config, factory: &WallpaperSetterFactory) -> u64 {
+    let normal_interval = cfg.interval.saturating_mul(3600);
+    if factory.get(&cfg.setter).is_none() {
+        log::error!("unknown wallpaper setter: {}", cfg.setter);
+        return normal_interval;
+    }
+    if !matches!(cfg.server.as_str(), "global" | "china") && cfg.customserver.trim().is_empty() {
+        log::error!("customserver must be set when server={}", cfg.server);
+        return normal_interval;
+    }
+
     let client = webutil::build_client(if cfg.proxy_server.is_empty() {
         None
     } else {
@@ -114,10 +124,14 @@ fn run_cycle(cfg: &Config, factory: &WallpaperSetterFactory) -> u64 {
         ))
     });
 
-    prepare_output_dir(&cfg.output_folder);
+    if !prepare_output_dir(&cfg.output_folder) {
+        return normal_interval;
+    }
     let hist_file = history_file();
-    if let Some(parent) = Path::new(&hist_file).parent() {
-        prepare_output_dir(&parent.to_string_lossy());
+    if let Some(parent) = Path::new(&hist_file).parent()
+        && !prepare_output_dir(&parent.to_string_lossy())
+    {
+        return normal_interval;
     }
 
     let mut record_mgr = DownloadRecordManager::new();
@@ -133,11 +147,14 @@ fn run_cycle(cfg: &Config, factory: &WallpaperSetterFactory) -> u64 {
                     let s = factory_fn();
                     let wallpaper_record = &records[0];
                     log::info!("setting wallpaper {}", wallpaper_record.local_file);
-                    s.set(&wallpaper_record.local_file, &cfg.setter_args);
-                    log::info!("all done. enjoy your new wallpaper");
+                    if s.set(&wallpaper_record.local_file, &cfg.setter_args) {
+                        log::info!("all done. enjoy your new wallpaper");
+                    } else {
+                        log::error!("failed to set wallpaper {}", wallpaper_record.local_file);
+                    }
                 }
             }
-            cfg.interval * 3600
+            normal_interval
         }
         Err(CannotLoadImagePage) => {
             #[cfg(windows)]
@@ -148,8 +165,10 @@ fn run_cycle(cfg: &Config, factory: &WallpaperSetterFactory) -> u64 {
                 log::info!("network error happened, daemon will retry in 60 seconds");
                 60
             } else {
-                log::info!("network error happened. please retry after Internet connection restore.");
-                cfg.interval * 3600
+                log::info!(
+                    "network error happened. please retry after Internet connection restore."
+                );
+                normal_interval
             }
         }
     }
@@ -176,8 +195,8 @@ fn download_wallpaper(
     };
 
     let base_url = match cfg.server.as_str() {
-        "global" => "http://www.bing.com".to_string(),
-        "china" => "http://s.cn.bing.net".to_string(),
+        "global" => BingWallpaperPage::BASE_URL.to_string(),
+        "china" => "https://s.cn.bing.net".to_string(),
         _ => cfg.customserver.clone(),
     };
 
@@ -185,10 +204,8 @@ fn download_wallpaper(
         idx,
         1,
         &base_url,
-        country_code,
-        market_code,
-        &cfg.size_mode,
-        &cfg.image_size,
+        (country_code, market_code),
+        (&cfg.size_mode, &cfg.image_size),
         cfg.collect.clone(),
     );
 
@@ -205,16 +222,16 @@ fn download_wallpaper(
             log::debug!("{:?} photo list: {:?}", metadata, wplinks);
             let mainlink = &wplinks[0];
             let copyright = &metadata.copyright;
-            let outfile = get_output_filename(cfg, mainlink);
+            let outfile = get_output_filename(cfg, mainlink, false);
 
-            if let Some(rec) = record_mgr.get_by_url(mainlink) {
-                if rec.local_file == outfile {
-                    if !cfg.redownload {
-                        log::info!("file has been downloaded before, exit");
-                        return Ok(None);
-                    } else {
-                        log::info!("file has been downloaded before, redownload it");
-                    }
+            if let Some(rec) = record_mgr.get_by_url(mainlink)
+                && rec.local_file == outfile
+            {
+                if !cfg.redownload {
+                    log::info!("file has been downloaded before, exit");
+                    return Ok(None);
+                } else {
+                    log::info!("file has been downloaded before, redownload it");
                 }
             }
 
@@ -228,12 +245,9 @@ fn download_wallpaper(
                 mainlink.clone(),
                 outfile.clone(),
                 copyright.clone(),
-                Some(metadata.fullstartdate),
-                Some(
-                    metadata
-                        .enddate
-                        .and_hms_opt(0, 0, 0)
-                        .unwrap_or_default(),
+                (
+                    Some(metadata.fullstartdate),
+                    Some(metadata.enddate.and_hms_opt(0, 0, 0).unwrap_or_default()),
                 ),
                 if cfg.database_no_image {
                     None
@@ -261,7 +275,7 @@ fn collect_assets(
     records: &mut Vec<DownloadRecord>,
 ) {
     for link in wplinks {
-        let filename = get_output_filename(cfg, link);
+        let filename = get_output_filename(cfg, link, true);
         let raw = match save_a_picture(client, link, &filename) {
             Some(r) => r,
             None => continue,
@@ -272,8 +286,7 @@ fn collect_assets(
                 link.clone(),
                 filename.clone(),
                 metadata.copyright.clone(),
-                None,
-                None,
+                (None, None),
                 if cfg.database_no_image {
                     None
                 } else {
@@ -309,7 +322,7 @@ fn save_a_picture(
     picture_content
 }
 
-fn get_output_filename(cfg: &Config, link: &str) -> String {
+fn get_output_filename(cfg: &Config, link: &str, is_asset: bool) -> String {
     let (path_part, query_part) = if let Some(qpos) = link.find('?') {
         (&link[..qpos], &link[qpos + 1..])
     } else {
@@ -337,12 +350,15 @@ fn get_output_filename(cfg: &Config, link: &str) -> String {
             );
         }
     }
-    if !cfg.keep_file_name {
+    filename = sanitize_filename(&filename);
+    if !cfg.keep_file_name && !is_asset {
         let ext = Path::new(&filename)
             .extension()
             .and_then(|e| e.to_str())
             .unwrap_or("jpg");
         filename = format!("wallpaper.{}", ext);
+    } else if !cfg.keep_file_name {
+        filename = format!("asset-{}", filename);
     }
     Path::new(&cfg.output_folder)
         .join(filename)
@@ -350,9 +366,41 @@ fn get_output_filename(cfg: &Config, link: &str) -> String {
         .to_string()
 }
 
-fn prepare_output_dir(d: &str) {
+fn sanitize_filename(filename: &str) -> String {
+    let basename = filename.rsplit(['/', '\\']).next().unwrap_or("");
+    let cleaned: String = basename
+        .chars()
+        .map(|c| match c {
+            '<' | '>' | ':' | '"' | '/' | '\\' | '|' | '?' | '*' | '\0'..='\u{1f}' => '_',
+            _ => c,
+        })
+        .collect();
+    let cleaned = cleaned.trim().trim_end_matches(['.', ' ']);
+    if cleaned.is_empty() || matches!(cleaned, "." | "..") {
+        "wallpaper.jpg".to_string()
+    } else if is_windows_reserved_filename(cleaned) {
+        format!("_{}", cleaned)
+    } else {
+        cleaned.to_string()
+    }
+}
+
+fn is_windows_reserved_filename(filename: &str) -> bool {
+    let stem = filename.split('.').next().unwrap_or("");
+    let upper = stem.to_ascii_uppercase();
+    matches!(upper.as_str(), "CON" | "PRN" | "AUX" | "NUL")
+        || upper
+            .strip_prefix("COM")
+            .or_else(|| upper.strip_prefix("LPT"))
+            .is_some_and(|n| matches!(n, "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9"))
+}
+
+fn prepare_output_dir(d: &str) -> bool {
     if let Err(e) = std::fs::create_dir_all(d) {
         log::error!("can not create output folder {}: {}", d, e);
+        false
+    } else {
+        true
     }
 }
 
@@ -386,5 +434,47 @@ fn save_history(
             cfg.database_file,
             e
         );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::PathBuf;
+
+    fn test_config() -> Config {
+        Config {
+            output_folder: "output".to_string(),
+            ..Config::default()
+        }
+    }
+
+    #[test]
+    fn main_and_asset_filenames_do_not_collide() {
+        let cfg = test_config();
+
+        assert_eq!(
+            PathBuf::from(get_output_filename(
+                &cfg,
+                "https://example.com/photo.jpg",
+                false
+            )),
+            PathBuf::from("output/wallpaper.jpg")
+        );
+        assert_eq!(
+            PathBuf::from(get_output_filename(
+                &cfg,
+                "https://example.com/photo.jpg",
+                true
+            )),
+            PathBuf::from("output/asset-photo.jpg")
+        );
+    }
+
+    #[test]
+    fn sanitizes_unusable_filenames() {
+        assert_eq!(sanitize_filename("../bad:name.jpg"), "bad_name.jpg");
+        assert_eq!(sanitize_filename("CON.jpg"), "_CON.jpg");
+        assert_eq!(sanitize_filename("..."), "wallpaper.jpg");
     }
 }

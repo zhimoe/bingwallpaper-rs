@@ -22,7 +22,7 @@ impl WallpaperSetterFactory {
         self.registered.insert(name.to_string(), Box::new(factory));
     }
 
-    pub fn get(&self, name: &str) -> Option<&Box<dyn Fn() -> Box<dyn WallpaperSetter> + Send + Sync>> {
-        self.registered.get(name)
+    pub fn get(&self, name: &str) -> Option<&(dyn Fn() -> Box<dyn WallpaperSetter> + Send + Sync)> {
+        self.registered.get(name).map(Box::as_ref)
     }
 }

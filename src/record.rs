@@ -23,12 +23,12 @@ impl DownloadRecord {
         url: String,
         local_file: String,
         description: String,
-        start_time: Option<chrono::NaiveDateTime>,
-        end_time: Option<chrono::NaiveDateTime>,
+        active_time: (Option<chrono::NaiveDateTime>, Option<chrono::NaiveDateTime>),
         raw: Option<Vec<u8>>,
         is_accompany: bool,
         market: String,
     ) -> Self {
+        let (start_time, end_time) = active_time;
         let now = Utc::now().to_rfc3339();
         DownloadRecord {
             url,
@@ -40,22 +40,6 @@ impl DownloadRecord {
             raw,
             is_accompany,
             market,
-        }
-    }
-
-    pub fn null_record() -> Self {
-        DownloadRecord {
-            url: String::new(),
-            local_file: String::new(),
-            description: "Null Record".to_string(),
-            time: chrono::DateTime::from_timestamp(0, 0)
-                .unwrap()
-                .to_rfc3339(),
-            start_time: None,
-            end_time: None,
-            raw: None,
-            is_accompany: false,
-            market: String::new(),
         }
     }
 }
@@ -143,10 +127,11 @@ impl SqlDatabaseRecordManager {
 
     pub fn save(&self, path: &str) -> Result<(), Box<dyn std::error::Error>> {
         log::info!("trying to save history to {}", path);
-        let conn = Connection::open(path)?;
-        self.upgrade_db(&conn)?;
+        let mut conn = Connection::open(path)?;
+        let transaction = conn.transaction()?;
+        self.upgrade_db(&transaction)?;
         for (k, v) in &self.records {
-            conn.execute(
+            transaction.execute(
                 "INSERT OR REPLACE INTO [BingWallpaperRecords]
                   (Url, DownloadTime, StartTime, EndTime, LocalFilePath, Description, Image, IsAccompany, Market)
                   VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
@@ -163,6 +148,7 @@ impl SqlDatabaseRecordManager {
                 ],
             )?;
         }
+        transaction.commit()?;
         Ok(())
     }
 
@@ -178,6 +164,8 @@ impl SqlDatabaseRecordManager {
                 ver
             )
             .into());
+        } else if ver == Self::LATEST_DB_VERSION {
+            return Ok(());
         }
         log::info!(
             "current db version {:?} needs upgrade to {:?}",
@@ -187,7 +175,8 @@ impl SqlDatabaseRecordManager {
         let mut current_ver = ver;
         while self.vercmp(current_ver, Self::LATEST_DB_VERSION) < 0 {
             let (next_ver, script) = match current_ver {
-                (4, 4, 1) => ((4, 4, 2),
+                (4, 4, 1) => (
+                    (4, 4, 2),
                     r#"ALTER TABLE [BingWallpaperRecords]
 ADD COLUMN Market TEXT(64) DEFAULT "";
 
@@ -198,8 +187,10 @@ CREATE TABLE [BingWallpaperCore]
 
 INSERT INTO [BingWallpaperCore]
   (MajorVer, MinorVer, Build)
-  VALUES (4, 4, 2);"#),
-                (4, 4, 2) => ((5, 6, 1),
+  VALUES (4, 4, 2);"#,
+                ),
+                (4, 4, 2) => (
+                    (5, 6, 1),
                     r#"ALTER TABLE [BingWallpaperRecords]
 ADD COLUMN StartTime DATETIME DEFAULT NULL;
 ALTER TABLE [BingWallpaperRecords]
@@ -207,7 +198,8 @@ ADD COLUMN EndTime DATETIME DEFAULT NULL;
 
 UPDATE [BingWallpaperCore]
   SET MajorVer=5, MinorVer=6, Build=1
-  WHERE MajorVer=4 AND MinorVer=4 AND Build=2;"#),
+  WHERE MajorVer=4 AND MinorVer=4 AND Build=2;"#,
+                ),
                 _ => return Err(format!("Unknown version {:?}", current_ver).into()),
             };
             log::debug!(
@@ -253,7 +245,10 @@ UPDATE [BingWallpaperCore]
               VALUES (?1, ?2, ?3)",
             rusqlite::params![5, 6, 1],
         )?;
-        log::debug!("created db from prog version {:?}", self.judge_version(conn));
+        log::debug!(
+            "created db from prog version {:?}",
+            self.judge_version(conn)
+        );
         Ok(())
     }
 
@@ -269,9 +264,8 @@ UPDATE [BingWallpaperCore]
         &self,
         conn: &Connection,
     ) -> Result<(i32, i32, i32), Box<dyn std::error::Error>> {
-        let mut stmt = conn.prepare(
-            "SELECT lower(name) FROM [sqlite_master] WHERE type=='table';"
-        )?;
+        let mut stmt =
+            conn.prepare("SELECT lower(name) FROM [sqlite_master] WHERE type=='table';")?;
         let tables: Vec<String> = stmt
             .query_map([], |row| row.get::<_, String>(0))?
             .filter_map(|r| r.ok())
@@ -286,15 +280,60 @@ UPDATE [BingWallpaperCore]
         {
             (4, 4, 1)
         } else {
-            let mut stmt = conn.prepare(
-                "SELECT MajorVer, MinorVer, Build FROM [BingWallpaperCore];"
-            )?;
+            let mut stmt =
+                conn.prepare("SELECT MajorVer, MinorVer, Build FROM [BingWallpaperCore];")?;
             stmt.query_row([], |row| {
-                Ok((row.get::<_, i32>(0)?, row.get::<_, i32>(1)?, row.get::<_, i32>(2)?))
+                Ok((
+                    row.get::<_, i32>(0)?,
+                    row.get::<_, i32>(1)?,
+                    row.get::<_, i32>(2)?,
+                ))
             })
             .optional()?
             .unwrap_or((0, 0, 0))
         };
         Ok(ver)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn creates_latest_database_schema() {
+        let conn = Connection::open_in_memory().unwrap();
+        let manager = SqlDatabaseRecordManager::new();
+
+        manager.upgrade_db(&conn).unwrap();
+
+        assert_eq!(
+            manager.judge_version(&conn).unwrap(),
+            SqlDatabaseRecordManager::LATEST_DB_VERSION
+        );
+    }
+
+    #[test]
+    fn upgrades_legacy_database_schema() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE BingWallpaperRecords (
+                Url TEXT PRIMARY KEY,
+                DownloadTime DATETIME NOT NULL,
+                LocalFilePath TEXT,
+                Description TEXT,
+                Image BLOB,
+                IsAccompany BOOLEAN DEFAULT False
+            );",
+        )
+        .unwrap();
+        let manager = SqlDatabaseRecordManager::new();
+
+        manager.upgrade_db(&conn).unwrap();
+
+        assert_eq!(
+            manager.judge_version(&conn).unwrap(),
+            SqlDatabaseRecordManager::LATEST_DB_VERSION
+        );
     }
 }

@@ -18,10 +18,10 @@ pub struct CliArgs {
     #[arg(long)]
     pub generate_config: bool,
 
-    #[arg(short, long)]
+    #[arg(short, long, conflicts_with = "foreground")]
     pub background: bool,
 
-    #[arg(long)]
+    #[arg(long, conflicts_with = "background")]
     pub foreground: bool,
 
     #[arg(short, long, value_name = "COUNTRY")]
@@ -39,7 +39,7 @@ pub struct CliArgs {
     #[arg(short, long)]
     pub keep_file_name: bool,
 
-    #[arg(short, long, value_name = "MODE")]
+    #[arg(long, value_name = "MODE")]
     pub size_mode: Option<String>,
 
     #[arg(long, value_name = "ITEM", action = clap::ArgAction::Append)]
@@ -48,7 +48,7 @@ pub struct CliArgs {
     #[arg(long, value_name = "SIZE")]
     pub image_size: Option<String>,
 
-    #[arg(short, long, value_name = "OFFSET")]
+    #[arg(long, value_name = "OFFSET")]
     pub offset: Option<i32>,
 
     #[arg(long, value_name = "URL")]
@@ -87,10 +87,10 @@ pub struct CliArgs {
     #[arg(long, value_name = "URL")]
     pub custom_server: Option<String>,
 
-    #[arg(long)]
+    #[arg(long, conflicts_with = "uninstall_autostart")]
     pub install_autostart: bool,
 
-    #[arg(long)]
+    #[arg(long, conflicts_with = "install_autostart")]
     pub uninstall_autostart: bool,
 }
 
@@ -155,7 +155,10 @@ impl Default for Config {
             redownload: false,
             setter: "win".to_string(),
             setter_args: vec![],
-            output_folder: PathBuf::from(&home).join("MyBingWallpapers").to_string_lossy().to_string(),
+            output_folder: PathBuf::from(&home)
+                .join("MyBingWallpapers")
+                .to_string_lossy()
+                .to_string(),
             database_file: "".to_string(),
             database_no_image: false,
             server: "global".to_string(),
@@ -165,11 +168,17 @@ impl Default for Config {
 }
 
 fn parse_bool(s: &str) -> bool {
-    !(s.is_empty() || s.eq_ignore_ascii_case("false") || s == "0")
+    matches!(
+        s.trim().to_ascii_lowercase().as_str(),
+        "1" | "true" | "yes" | "on"
+    )
 }
 
 fn parse_collect(s: &str) -> Vec<String> {
-    s.split(',').map(|p| p.trim().to_string()).filter(|p| !p.is_empty()).collect()
+    s.split(',')
+        .map(|p| p.trim().to_string())
+        .filter(|p| !p.is_empty())
+        .collect()
 }
 
 impl Config {
@@ -184,17 +193,21 @@ impl Config {
         // Load from INI if exists
         if std::path::Path::new(&cfg.config_file).is_file() {
             let mut ini = Ini::new();
-            if ini.load(&cfg.config_file).is_ok() {
+            let load_result = ini.load(&cfg.config_file);
+            if let Err(ref e) = load_result {
+                log::warn!("failed to load config {}: {}", cfg.config_file, e);
+            }
+            if load_result.is_ok() {
                 if let Some(v) = ini.get("Daemon", "background") {
                     cfg.background = parse_bool(&v);
                 }
                 if let Some(v) = ini.get("Daemon", "foreground") {
                     cfg.foreground = parse_bool(&v);
                 }
-                if let Some(v) = ini.get("Daemon", "interval") {
-                    if let Ok(i) = v.parse::<u64>() {
-                        cfg.interval = if i >= 1 { i } else { 1 };
-                    }
+                if let Some(v) = ini.get("Daemon", "interval")
+                    && let Ok(i) = v.parse::<u64>()
+                {
+                    cfg.interval = i.max(1);
                 }
                 if let Some(v) = ini.get("Download", "country") {
                     cfg.country = v;
@@ -214,10 +227,10 @@ impl Config {
                 if let Some(v) = ini.get("Download", "image_size") {
                     cfg.image_size = v;
                 }
-                if let Some(v) = ini.get("Download", "offset") {
-                    if let Ok(i) = v.parse::<i32>() {
-                        cfg.offset = i;
-                    }
+                if let Some(v) = ini.get("Download", "offset")
+                    && let Ok(i) = v.parse::<i32>()
+                {
+                    cfg.offset = i;
                 }
                 if let Some(v) = ini.get("Download", "output_folder") {
                     cfg.output_folder = v;
@@ -234,10 +247,10 @@ impl Config {
                 if let Some(v) = ini.get("Proxy", "proxy_server") {
                     cfg.proxy_server = v;
                 }
-                if let Some(v) = ini.get("Proxy", "proxy_port") {
-                    if let Ok(p) = v.parse::<u16>() {
-                        cfg.proxy_port = p;
-                    }
+                if let Some(v) = ini.get("Proxy", "proxy_port")
+                    && let Ok(p) = v.parse::<u16>()
+                {
+                    cfg.proxy_port = p;
                 }
                 if let Some(v) = ini.get("Proxy", "proxy_username") {
                     cfg.proxy_username = v;
@@ -257,10 +270,10 @@ impl Config {
                 if let Some(v) = ini.get("Database", "database_no_image") {
                     cfg.database_no_image = parse_bool(&v);
                 }
-                if let Some(v) = ini.get("Debug", "debug") {
-                    if let Ok(d) = v.parse::<u8>() {
-                        cfg.debug = d;
-                    }
+                if let Some(v) = ini.get("Debug", "debug")
+                    && let Ok(d) = v.parse::<u8>()
+                {
+                    cfg.debug = d;
                 }
             }
         }
@@ -268,11 +281,21 @@ impl Config {
         // CLI overrides (apply after INI)
         cfg.generate_config = cli.generate_config;
         cfg.list_markets = cli.list_markets;
-        if cli.background { cfg.background = true; }
-        if cli.foreground { cfg.foreground = true; }
-        if cli.keep_file_name { cfg.keep_file_name = true; }
-        if cli.redownload { cfg.redownload = true; }
-        if cli.database_no_image { cfg.database_no_image = true; }
+        if cli.background {
+            cfg.background = true;
+        }
+        if cli.foreground {
+            cfg.foreground = true;
+        }
+        if cli.keep_file_name {
+            cfg.keep_file_name = true;
+        }
+        if cli.redownload {
+            cfg.redownload = true;
+        }
+        if cli.database_no_image {
+            cfg.database_no_image = true;
+        }
 
         if cli.debug > 0 {
             cfg.debug = cli.debug;
@@ -281,7 +304,7 @@ impl Config {
             cfg.config_file = v.clone();
         }
         if let Some(v) = cli.interval {
-            cfg.interval = if v >= 1 { v } else { 1 };
+            cfg.interval = v.max(1);
         }
         if let Some(ref v) = cli.country {
             cfg.country = v.clone();
@@ -352,12 +375,20 @@ impl Config {
 
         ini.set("Download", "country", Some(self.country.clone()));
         ini.set("Download", "market", Some(self.market.clone()));
-        ini.set("Download", "keep_file_name", Some(self.keep_file_name.to_string()));
+        ini.set(
+            "Download",
+            "keep_file_name",
+            Some(self.keep_file_name.to_string()),
+        );
         ini.set("Download", "size_mode", Some(self.size_mode.clone()));
         ini.set("Download", "collect", Some(self.collect.join(",")));
         ini.set("Download", "image_size", Some(self.image_size.clone()));
         ini.set("Download", "offset", Some(self.offset.to_string()));
-        ini.set("Download", "output_folder", Some(self.output_folder.clone()));
+        ini.set(
+            "Download",
+            "output_folder",
+            Some(self.output_folder.clone()),
+        );
         ini.set("Download", "redownload", Some(self.redownload.to_string()));
         ini.set("Download", "server", Some(self.server.clone()));
         ini.set("Download", "customserver", Some(self.customserver.clone()));
@@ -370,13 +401,23 @@ impl Config {
         ini.set("Setter", "setter", Some(self.setter.clone()));
         ini.set("Setter", "setter_args", Some(self.setter_args.join(",")));
 
-        ini.set("Database", "database_file", Some(self.database_file.clone()));
-        ini.set("Database", "database_no_image", Some(self.database_no_image.to_string()));
+        ini.set(
+            "Database",
+            "database_file",
+            Some(self.database_file.clone()),
+        );
+        ini.set(
+            "Database",
+            "database_no_image",
+            Some(self.database_no_image.to_string()),
+        );
 
         ini.set("Debug", "debug", Some(self.debug.to_string()));
 
-        let _ = ini.write(&self.config_file);
-        log::info!("config saved to {}", self.config_file);
+        match ini.write(&self.config_file) {
+            Ok(()) => log::info!("config saved to {}", self.config_file),
+            Err(e) => log::error!("failed to save config to {}: {}", self.config_file, e),
+        }
     }
 }
 
@@ -430,5 +471,25 @@ pub fn list_markets() {
     println!("Available markets:");
     for (k, v) in markets {
         println!("{}     {}", k, v);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clap::CommandFactory;
+
+    #[test]
+    fn cli_definition_is_valid() {
+        CliArgs::command().debug_assert();
+    }
+
+    #[test]
+    fn parses_boolean_values() {
+        assert!(parse_bool("true"));
+        assert!(parse_bool("yes"));
+        assert!(!parse_bool("false"));
+        assert!(!parse_bool("0"));
+        assert!(!parse_bool("no"));
     }
 }

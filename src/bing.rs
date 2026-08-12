@@ -6,10 +6,7 @@ use crate::webutil;
 #[derive(Debug, Clone)]
 pub struct Metadata {
     pub copyright: String,
-    pub copyrightlink: String,
-    pub hsh: String,
     pub market: String,
-    pub startdate: chrono::NaiveDate,
     pub enddate: chrono::NaiveDate,
     pub fullstartdate: chrono::NaiveDateTime,
 }
@@ -123,7 +120,10 @@ impl HighResolutionSetting for HighestResolution {
             Some(wplink)
         } else {
             let wplink = format!("{}{}_1920x1080.jpg", rooturl, imgurlbase);
-            log::debug!("not support wallpaper, use second highest resolution {}", wplink);
+            log::debug!(
+                "not support wallpaper, use second highest resolution {}",
+                wplink
+            );
             Some(wplink)
         }
     }
@@ -142,7 +142,14 @@ impl HighResolutionSetting for ManualHighResolution {
         _has_wp: bool,
         _resolution: &str,
     ) -> Option<String> {
-        if !self.resolution.contains('x') {
+        let valid = self
+            .resolution
+            .split_once('x')
+            .and_then(|(width, height)| {
+                Some((width.parse::<u32>().ok()?, height.parse::<u32>().ok()?))
+            })
+            .is_some_and(|(width, height)| width > 0 && height > 0);
+        if !valid {
             log::error!("invalid resolution \"{}\" for manual mode", self.resolution);
             return None;
         }
@@ -177,7 +184,10 @@ pub struct AccompanyImageCollector;
 impl AssetCollector for AccompanyImageCollector {
     fn collect(&self, rooturl: &str, curimage: &Value) -> Option<Vec<String>> {
         let img_url_base = curimage["urlbase"].as_str()?;
-        let has_wp = curimage.get("wp").and_then(|v| v.as_bool()).unwrap_or(false);
+        let has_wp = curimage
+            .get("wp")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
         if has_wp && !img_url_base.contains("_ZH_") {
             log::debug!("{} may have a Chinese brother", img_url_base);
             let zh_link = format!("{}{}_ZH_1920x1200.jpg", rooturl, img_url_base);
@@ -194,27 +204,26 @@ fn collect_video_urls(curimage: &Value, hd: bool) -> Option<Vec<String>> {
     let sources = vid["sources"].as_array()?;
     let mut vlink = Vec::new();
     for item in sources {
-        let arr = item.as_array()?;
+        let Some(arr) = item.as_array() else {
+            continue;
+        };
         if arr.len() < 3 {
             continue;
         }
-        let video_format = arr[0].as_str()?;
-        let video_url = arr[2].as_str()?;
+        let (Some(video_format), Some(video_url)) = (arr[0].as_str(), arr[2].as_str()) else {
+            continue;
+        };
         if video_format.ends_with("hd") != hd {
             continue;
         }
         let url = if video_url.starts_with("//") {
-            format!("http:{}", video_url)
+            format!("https:{}", video_url)
         } else {
             video_url.to_string()
         };
         vlink.push(url);
     }
-    if vlink.is_empty() {
-        None
-    } else {
-        Some(vlink)
-    }
+    if vlink.is_empty() { None } else { Some(vlink) }
 }
 
 pub struct VideoCollector;
@@ -245,13 +254,8 @@ pub fn get_asset_collector(name: &str) -> Option<Box<dyn AssetCollector>> {
 
 #[derive(Debug)]
 pub struct BingWallpaperPage {
-    pub idx: i32,
-    pub n: i32,
     pub base: String,
-    pub api: String,
     pub url: String,
-    pub country_code: Option<String>,
-    pub market_code: Option<String>,
     pub resolution: String,
     pub high_resolution_name: String,
     pub collect: Vec<String>,
@@ -262,37 +266,40 @@ pub struct BingWallpaperPage {
 }
 
 impl BingWallpaperPage {
-    pub const BASE_URL: &'static str = "http://www.bing.com";
-    pub const IMAGE_API: &'static str = "/HPImageArchive.aspx?format=js&mbl=1&idx={idx}&n={n}&video=1";
+    pub const BASE_URL: &'static str = "https://www.bing.com";
 
     pub fn new(
         idx: i32,
         n: i32,
         base: &str,
-        country_code: Option<String>,
-        market_code: Option<String>,
-        high_resolution_name: &str,
-        resolution: &str,
+        locale: (Option<String>, Option<String>),
+        resolution_setting: (&str, &str),
         collect: Vec<String>,
     ) -> Self {
-        let api = format!("/HPImageArchive.aspx?format=js&mbl=1&idx={}&n={}&video=1", idx, n);
+        let (country_code, market_code) = locale;
+        let (high_resolution_name, resolution) = resolution_setting;
+        let base = base.trim_end_matches('/');
+        let api = format!(
+            "/HPImageArchive.aspx?format=js&mbl=1&idx={}&n={}&video=1",
+            idx, n
+        );
         let mut url = format!("{}{}", base, api);
         if let Some(ref mkt) = market_code {
-            if let Err(e) = Self::validate_market(mkt) {
-                log::warn!("{}", e);
+            match Self::validate_market(mkt) {
+                Ok(()) => url.push_str(&format!("&mkt={}", mkt)),
+                Err(e) => {
+                    log::warn!("{}", e);
+                    if let Some(ref cc) = country_code {
+                        url.push_str(&format!("&cc={}", cc));
+                    }
+                }
             }
-            url.push_str(&format!("&mkt={}", mkt));
         } else if let Some(ref cc) = country_code {
             url.push_str(&format!("&cc={}", cc));
         }
         BingWallpaperPage {
-            idx,
-            n,
             base: base.to_string(),
-            api,
             url,
-            country_code,
-            market_code,
             resolution: resolution.to_string(),
             high_resolution_name: high_resolution_name.to_string(),
             collect,
@@ -312,14 +319,6 @@ impl BingWallpaperPage {
 
     pub fn loaded(&self) -> bool {
         self.loaded
-    }
-
-    pub fn images(&self) -> Option<&Vec<Value>> {
-        if self.loaded {
-            Some(&self.images)
-        } else {
-            None
-        }
     }
 
     pub fn image_links(&self) -> Option<&Vec<(Vec<String>, Metadata)>> {
@@ -357,10 +356,10 @@ impl BingWallpaperPage {
             Some(arr) => arr.clone(),
             None => return false,
         };
-        if let Some(market) = content.get("market") {
-            if let Some(mkt) = market["mkt"].as_str() {
-                self.act_market = mkt.to_string();
-            }
+        if let Some(market) = content.get("market")
+            && let Some(mkt) = market["mkt"].as_str()
+        {
+            self.act_market = mkt.to_string();
         }
         self.update_img_link(client);
         log::debug!("links to be downloaded: {:?}", self.wplinks);
@@ -368,16 +367,11 @@ impl BingWallpaperPage {
     }
 
     fn get_metadata(&self, i: &Value) -> Metadata {
-        let startdate = i["startdate"].as_str().unwrap_or("19700101");
         let enddate = i["enddate"].as_str().unwrap_or("19700101");
         let fullstartdate = i["fullstartdate"].as_str().unwrap_or("197001010000");
         Metadata {
             copyright: i["copyright"].as_str().unwrap_or("").to_string(),
-            copyrightlink: i["copyrightlink"].as_str().unwrap_or("").to_string(),
-            hsh: i["hsh"].as_str().unwrap_or("").to_string(),
             market: self.act_market.clone(),
-            startdate: chrono::NaiveDate::parse_from_str(startdate, "%Y%m%d")
-                .unwrap_or_else(|_| chrono::NaiveDate::from_ymd_opt(1970, 1, 1).unwrap()),
             enddate: chrono::NaiveDate::parse_from_str(enddate, "%Y%m%d")
                 .unwrap_or_else(|_| chrono::NaiveDate::from_ymd_opt(1970, 1, 1).unwrap()),
             fullstartdate: chrono::NaiveDateTime::parse_from_str(fullstartdate, "%Y%m%d%H%M")
@@ -408,13 +402,20 @@ impl BingWallpaperPage {
                 self.resolution,
                 self.act_market
             );
-            let wplink = hr.get_pic_url(client, &self.base, imgurlbase, fallbackurl, has_wp, &self.resolution);
+            let wplink = hr.get_pic_url(
+                client,
+                &self.base,
+                imgurlbase,
+                fallbackurl,
+                has_wp,
+                &self.resolution,
+            );
             let mut collections: Vec<String> = Vec::new();
             for collector_name in &self.collect {
-                if let Some(collector) = get_asset_collector(collector_name) {
-                    if let Some(assets) = collector.collect(&self.base, i) {
-                        collections.extend(assets);
-                    }
+                if let Some(collector) = get_asset_collector(collector_name)
+                    && let Some(assets) = collector.collect(&self.base, i)
+                {
+                    collections.extend(assets);
                 }
             }
             if let Some(main) = wplink {
@@ -437,5 +438,83 @@ impl BingWallpaperPage {
         } else {
             Err(format!("{} is not a valid market code.", market_code))
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn video_collector_skips_malformed_sources() {
+        let image = json!({
+            "vid": {
+                "sources": [
+                    null,
+                    ["mp4", "missing URL"],
+                    [42, null, false],
+                    ["mp4", 0, "//example.com/video.mp4"],
+                    ["mp4hd", 0, "//example.com/video-hd.mp4"]
+                ]
+            }
+        });
+
+        assert_eq!(
+            collect_video_urls(&image, false),
+            Some(vec!["https://example.com/video.mp4".to_string()])
+        );
+        assert_eq!(
+            collect_video_urls(&image, true),
+            Some(vec!["https://example.com/video-hd.mp4".to_string()])
+        );
+    }
+
+    #[test]
+    fn validates_market_shape() {
+        assert!(BingWallpaperPage::validate_market("zh-CN").is_ok());
+        assert!(BingWallpaperPage::validate_market("zh_CN").is_err());
+        assert!(BingWallpaperPage::validate_market("中文").is_err());
+    }
+
+    #[test]
+    fn validates_manual_resolution() {
+        let client = Client::new();
+        let valid = ManualHighResolution {
+            resolution: "2560x1440".to_string(),
+        };
+        let invalid = ManualHighResolution {
+            resolution: "widexhigh".to_string(),
+        };
+
+        assert!(
+            valid
+                .get_pic_url(&client, "https://example.com", "/image", "", false, "")
+                .is_some()
+        );
+        assert!(
+            invalid
+                .get_pic_url(&client, "https://example.com", "/image", "", false, "")
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn normalizes_base_url_and_falls_back_from_invalid_market() {
+        let page = BingWallpaperPage::new(
+            0,
+            1,
+            "https://example.com/",
+            (Some("CN".to_string()), Some("invalid".to_string())),
+            ("never", ""),
+            vec![],
+        );
+
+        assert_eq!(page.base, "https://example.com");
+        assert!(
+            page.url
+                .starts_with("https://example.com/HPImageArchive.aspx")
+        );
+        assert!(page.url.ends_with("&cc=CN"));
     }
 }
