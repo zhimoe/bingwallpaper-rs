@@ -1,52 +1,22 @@
 #[cfg(windows)]
 pub fn install_autostart() -> Result<(), Box<dyn std::error::Error>> {
-    use windows::core::w;
-    use windows::Win32::System::Registry::{
-        RegCloseKey, RegOpenKeyExW, RegSetValueExW, HKEY, HKEY_CURRENT_USER, KEY_SET_VALUE, REG_SZ,
-    };
+    use windows_registry::{CURRENT_USER, HSTRING};
 
     let exe_path = std::env::current_exe()?.to_string_lossy().to_string();
-    let value = format!("\"{}\" -b", exe_path);
-    let wide_value: Vec<u16> = value.encode_utf16().chain(Some(0)).collect();
-
-    unsafe {
-        let mut hkey = HKEY::default();
-        let sub_key = w!("Software\\Microsoft\\Windows\\CurrentVersion\\Run");
-        RegOpenKeyExW(HKEY_CURRENT_USER, sub_key, 0, KEY_SET_VALUE, &mut hkey)?;
-
-        let name = w!("BingWallpaper");
-        RegSetValueExW(
-            hkey,
-            name,
-            0,
-            REG_SZ,
-            Some(wide_value.as_ptr() as *const u8),
-            (wide_value.len() * 2) as u32,
-        )?;
-        let _ = RegCloseKey(hkey);
-    }
+    let value = HSTRING::from(&(format!("\"{}\" -b", exe_path)));
+    let key = CURRENT_USER.create("Software\\Microsoft\\Windows\\CurrentVersion\\Run")?;
+    let _result = key.set_hstring("BingWallpaper", &value)?;
     log::info!("autostart installed: {}", value);
     Ok(())
 }
 
 #[cfg(windows)]
 pub fn uninstall_autostart() -> Result<(), Box<dyn std::error::Error>> {
-    use windows::core::w;
-    use windows::Win32::System::Registry::{
-        RegCloseKey, RegDeleteValueW, RegOpenKeyExW, HKEY, HKEY_CURRENT_USER, KEY_SET_VALUE,
-    };
-
-    unsafe {
-        let mut hkey = HKEY::default();
-        let sub_key = w!("Software\\Microsoft\\Windows\\CurrentVersion\\Run");
-        RegOpenKeyExW(HKEY_CURRENT_USER, sub_key, 0, KEY_SET_VALUE, &mut hkey)?;
-
-        let name = w!("BingWallpaper");
-        RegDeleteValueW(hkey, name)?;
-        let _ = RegCloseKey(hkey);
-    }
+    use windows_registry::CURRENT_USER;
+    let key = CURRENT_USER.create("Software\\Microsoft\\Windows\\CurrentVersion\\Run")?;
+    let result = key.remove_value("BingWallpaper")?;
     log::info!("autostart uninstalled");
-    Ok(())
+    Ok(result)
 }
 
 #[cfg(not(windows))]
